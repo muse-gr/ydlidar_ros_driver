@@ -30,6 +30,7 @@
 #include "src/CYdLidar.h"
 #include "ydlidar_config.h"
 #include <limits>       // std::numeric_limits
+#include "filters/NoiseFilter.h"//使用拖尾滤波器
 
 #define SDKROSVerision "1.0.2"
 
@@ -94,7 +95,10 @@ int main(int argc, char **argv) {
   optval = 4;
   nh_private.param<int>("abnormal_check_count", optval, 4);
   laser.setlidaropt(LidarPropAbnormalCheckCount, &optval, sizeof(int));
-
+  //intensity bit count
+  optval = 10;
+  nh_private.param<int>("intensity_bit", optval, 10);
+  laser.setlidaropt(LidarPropIntenstiyBit, &optval, sizeof(int));
 
   //////////////////////bool property/////////////////
   /// fixed angle resolution
@@ -166,12 +170,26 @@ int main(int argc, char **argv) {
     ROS_ERROR("%s\n", laser.DescribeError());
   }
 
+  //使用拖尾滤波器
+  LaserScan scan;
+  LaserScan outScan;
+  NoiseFilter filter;
+//  filter.setStrategy(NoiseFilter::FS_Tail);//旧拖尾滤波
+//  filter.setStrategy(NoiseFilter::FS_TailWeek);//拖尾滤波（弱）
+  filter.setStrategy(NoiseFilter::FS_TailStrong);//拖尾滤波（中）
+//  filter.setStrategy(NoiseFilter::FS_TailStrong2);//最强过滤（强）
+
   ros::Rate r(30);
 
   while (ret && ros::ok()) {
     LaserScan scan;
 
     if (laser.doProcessSimple(scan)) {
+		
+      //使用拖尾滤波器
+      filter.filter(scan, 0, 0, outScan);
+      scan = outScan;
+	  
       sensor_msgs::LaserScan scan_msg;
       sensor_msgs::PointCloud pc_msg;
 //      ydlidar_ros_driver::LaserFan fan;
