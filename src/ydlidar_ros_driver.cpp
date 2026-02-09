@@ -47,10 +47,17 @@ bool start_scan(std_srvs::Empty::Request &req,
   return laser.turnOn();
 }
 
-bool restartLidarSession(ros::Time &last_restart_time) {
+bool restartLidarSession(ros::Time &last_restart_time, int &retry_count) {
+
+  // limit retry
+  if (retry_count >= 5) {
+      return false;
+  }
+
   // introduce 10 seconds delay to not spam restart
   if ((ros::Time::now() - last_restart_time).toSec() > 10.0) {
-    ROS_WARN("[YDLIDAR] Internal restart triggered due to failure...");
+    retry_count++; 
+    ROS_WARN("[YDLIDAR] Internal restart triggered due to failure... Attempt %d/5", retry_count);
 
     laser.turnOff();
     laser.disconnecting();
@@ -205,7 +212,7 @@ int main(int argc, char **argv) {
   ros::Rate r(30);
 
   ros::Time lastRestart = ros::Time::now();
-
+  int retry_count = 0;
 
   while (ret && ros::ok()) {
     LaserScan scan;
@@ -279,8 +286,10 @@ int main(int argc, char **argv) {
 //      laser_fan_pub.publish(fan);
 
     } else {
-      ROS_ERROR("Failed to get Lidar Data, probably hardware error. reason:\n%s\n", laser.DescribeError());
-      restartLidarSession(lastRestart);
+      if (!restartLidarSession(lastRestart, retry_count)) {
+          ROS_FATAL("[YDLIDAR] Hardware Failure: Max restart attempts (5) reached. Shutting down driver.");
+          break; // Esce dal ciclo while e termina il nodo
+      }
     }
 
     r.sleep();
