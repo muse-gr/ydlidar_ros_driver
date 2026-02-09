@@ -47,6 +47,36 @@ bool start_scan(std_srvs::Empty::Request &req,
   return laser.turnOn();
 }
 
+bool restartLidarSession(ros::Time &last_restart_time) {
+  // introduce 10 seconds delay to not spam restart
+  if ((ros::Time::now() - last_restart_time).toSec() > 10.0) {
+    ROS_WARN("[YDLIDAR] Internal restart triggered due to failure...");
+
+    laser.turnOff();
+    laser.disconnecting();
+    
+    // give time to release resources
+    ros::Duration(0.5).sleep();
+
+    // re-initialize
+    bool ret = laser.initialize();
+    if (ret) {
+      ret = laser.turnOn();
+      if (ret) {
+         ROS_INFO("[YDLIDAR] Restart successful!");
+         last_restart_time = ros::Time::now(); 
+         return true;
+      }
+    }
+    
+    ROS_ERROR("[YDLIDAR] Failed to restart internally.");
+    // update timer to avoid spamming restart
+    last_restart_time = ros::Time::now(); 
+    return true; 
+  }
+  return false;
+}
+
 
 int main(int argc, char **argv) {
   ros::init(argc, argv, "ydlidar_ros_driver");
@@ -171,6 +201,9 @@ int main(int argc, char **argv) {
 
   ros::Rate r(30);
 
+  ros::Time lastRestart = ros::Time::now();
+
+
   while (ret && ros::ok()) {
     LaserScan scan;
 
@@ -243,7 +276,8 @@ int main(int argc, char **argv) {
 //      laser_fan_pub.publish(fan);
 
     } else {
-      ROS_ERROR("Failed to get Lidar Data");
+      ROS_ERROR("Failed to get Lidar Data, probably hardware error.");
+      restartLidarSession(lastRestart);
     }
 
     r.sleep();
