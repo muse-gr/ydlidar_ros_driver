@@ -66,6 +66,9 @@ bool restartLidarSession(ros::Time &last_restart_time) {
          ROS_INFO("[YDLIDAR] Restart successful!");
          last_restart_time = ros::Time::now(); 
          return true;
+      } else
+      {
+        ROS_ERROR("%s\n", laser.DescribeError());
       }
     }
     
@@ -276,7 +279,7 @@ int main(int argc, char **argv) {
 //      laser_fan_pub.publish(fan);
 
     } else {
-      ROS_ERROR("Failed to get Lidar Data, probably hardware error.");
+      ROS_ERROR("Failed to get Lidar Data, probably hardware error. reason:\n%s\n", laser.DescribeError());
       restartLidarSession(lastRestart);
     }
 
