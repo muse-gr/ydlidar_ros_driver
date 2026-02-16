@@ -288,7 +288,7 @@ int main(int argc, char **argv) {
     } else {
       if (!restartLidarSession(lastRestart, retry_count)) {
           ROS_FATAL("[YDLIDAR] Hardware Failure: Max restart attempts (5) reached. Shutting down driver.");
-          break; // Esce dal ciclo while e termina il nodo
+          break;
       }
     }
 
