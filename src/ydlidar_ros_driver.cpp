@@ -167,7 +167,7 @@ int main(int argc, char **argv) {
   f_optvalue = -180.0f;
   nh_private.param<float>("angle_min", f_optvalue, -180.f);
   laser.setlidaropt(LidarPropMinAngle, &f_optvalue, sizeof(float));
-  f_optvalue = 16.f; // m
+  f_optvalue = 16.f;
   nh_private.param<float>("range_max", f_optvalue, 16.f);
   laser.setlidaropt(LidarPropMaxRange, &f_optvalue, sizeof(float));
   f_optvalue = 0.1f; // m
