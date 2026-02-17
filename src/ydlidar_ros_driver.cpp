@@ -67,38 +67,34 @@ bool restartLidarSession(ros::Time &last_restart_time, int &retry_count) {
   if (retry_count >= 5) {
       return false;
   }
+  
+  retry_count++; 
 
-  // introduce 10 seconds delay to not spam restart
-  if ((ros::Time::now() - last_restart_time).toSec() > 10.0) {
-    retry_count++; 
-    ROS_WARN("[YDLIDAR] Internal restart triggered due to failure... Attempt %d/5", retry_count);
-
-    laser.turnOff();
-    laser.disconnecting();
-    
-    // give time to release resources
-    ros::Duration(0.5).sleep();
-
-    // re-initialize
-    bool ret = laser.initialize();
+  ROS_WARN("[YDLIDAR] Internal restart triggered due to failure... Attempt %d/5", retry_count);
+  
+  laser.turnOff();
+  laser.disconnecting();
+  
+  // give time to release resources
+  ros::Duration(0.5).sleep();
+  
+  // re-initialize
+  bool ret = laser.initialize();
+  if (ret) {
+    ret = laser.turnOn();
     if (ret) {
-      ret = laser.turnOn();
-      if (ret) {
-         ROS_INFO("[YDLIDAR] Restart successful!");
-         last_restart_time = ros::Time::now(); 
-         return true;
-      } else
-      {
-        ROS_ERROR("%s\n", laser.DescribeError());
-      }
+       ROS_INFO("[YDLIDAR] Restart successful!");
+       last_restart_time = ros::Time::now(); 
+       return true;
+    } else
+    {
+      ROS_ERROR("%s\n", laser.DescribeError());
     }
-    
-    ROS_ERROR("[YDLIDAR] Failed to restart internally.");
-    // update timer to avoid spamming restart
-    last_restart_time = ros::Time::now(); 
-    return true; 
   }
-  ROS_ERROR("[YDLIDAR] Restart timeout, retry in 10 seconds.");
+  
+  ROS_ERROR("[YDLIDAR] Failed to restart internally.");
+  // update timer to avoid spamming restart
+  last_restart_time = ros::Time::now(); 
   return true;
 }
 
