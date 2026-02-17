@@ -30,6 +30,9 @@
 #include "src/CYdLidar.h"
 #include "ydlidar_config.h"
 #include <limits>       // std::numeric_limits
+#include <mutex>
+
+std::mutex scan_mutex;
 
 #define SDKROSVerision "1.0.2"
 
@@ -37,17 +40,28 @@ CYdLidar laser;
 
 bool stop_scan(std_srvs::Empty::Request &req,
                std_srvs::Empty::Response &res) {
+  if (!scan_mutex.try_lock()) {
+    ROS_WARN("Stop scan ignored: restart session in progress.");
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(scan_mutex, std::adopt_lock);
   ROS_DEBUG("Stop scan");
   return laser.turnOff();
 }
 
 bool start_scan(std_srvs::Empty::Request &req,
                 std_srvs::Empty::Response &res) {
+  if (!scan_mutex.try_lock()) {
+    ROS_WARN("Start scan ignored: restart session in progress.");
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(scan_mutex, std::adopt_lock);
   ROS_DEBUG("Start scan");
   return laser.turnOn();
 }
 
 bool restartLidarSession(ros::Time &last_restart_time, int &retry_count) {
+  std::lock_guard<std::mutex> lock(scan_mutex);
 
   // limit retry
   if (retry_count >= 5) {
