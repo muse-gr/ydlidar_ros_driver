@@ -98,7 +98,8 @@ bool restartLidarSession(ros::Time &last_restart_time, int &retry_count) {
     last_restart_time = ros::Time::now(); 
     return true; 
   }
-  return false;
+  ROS_ERROR("[YDLIDAR] Restart timeout, retry in 10 seconds.");
+  return true;
 }
 
 
