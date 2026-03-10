@@ -564,7 +564,7 @@ int main(int argc, char** argv)
     // ---- Publishers ----
     ros::Publisher scan_pub         = nh.advertise<sensor_msgs::LaserScan>("scan", 1);
     ros::Publisher pc_pub           = nh.advertise<sensor_msgs::PointCloud>("point_cloud", 1);
-    ros::Publisher scan_filtered_pub = nh.advertise<sensor_msgs::PointCloud2>("scan_filtered", 1);
+    ros::Publisher scan_filtered_pub = nh.advertise<sensor_msgs::PointCloud2>("filtered_pointcloud", 1);
     ros::Publisher polygon_pub      = nh.advertise<visualization_msgs::MarkerArray>("obstacle_polygon_visualization", 1);
 
     // ---- Lidar hardware setup ----
