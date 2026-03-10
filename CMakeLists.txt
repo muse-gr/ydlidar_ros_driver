@@ -24,10 +24,10 @@ find_package(catkin REQUIRED COMPONENTS
     pcl_ros
     pcl_conversions
     visualization_msgs
+    cube_msgs
 )
 
 find_package(PCL REQUIRED)
-find_package(nlohmann_json REQUIRED)
 
 ##################LaserFan ##########################
 #add_message_files(DIRECTORY msg
@@ -50,7 +50,7 @@ find_package(nlohmann_json REQUIRED)
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(CATKIN_DEPENDS
     roscpp rospy sensor_msgs std_msgs message_runtime
-    tf laser_geometry pcl_ros pcl_conversions visualization_msgs
+    tf laser_geometry pcl_ros pcl_conversions visualization_msgs cube_msgs
 )
 #---------------------------------------------------------------------------------------
 # Set default build to release
@@ -95,7 +95,6 @@ target_link_libraries(${PROJECT_NAME}_node
     ${catkin_LIBRARIES}
     ${YDLIDAR_SDK_LIBRARIES}
     ${PCL_LIBRARIES}
-    nlohmann_json::nlohmann_json
 )
 
 

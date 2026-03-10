@@ -29,7 +29,9 @@
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/point_cloud2_iterator.h>
 #include <std_srvs/Empty.h>
-#include <std_msgs/Float32.h>
+#include <cube_msgs/VehicleState.h>
+#include <geometry_msgs/Polygon.h>
+#include <std_msgs/String.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <visualization_msgs/Marker.h>
 #include <geometry_msgs/Point.h>
@@ -49,14 +51,9 @@
 // ---- STL ----
 #include <atomic>
 #include <cmath>
-#include <filesystem>
-#include <fstream>
 #include <limits>
 #include <mutex>
 #include <unordered_map>
-
-// ---- JSON ----
-#include <nlohmann/json.hpp>
 
 // =============================================================================
 // Constants
@@ -97,10 +94,9 @@ struct FilterConfig
     std::vector<std::pair<float, float>> base_polygon;  // cart polygon, unrotated (meters)
     float conic_degree = 0.0f;
 };
-FilterConfig      g_filter_config;
-std::mutex        g_config_mutex;
+FilterConfig       g_filter_config;
+std::mutex         g_config_mutex;
 std::atomic<float> g_stage_angle{0.0f};
-std::string        g_unit_config_base_path;
 
 // =============================================================================
 // Geometry helpers
@@ -187,65 +183,6 @@ static visualization_msgs::MarkerArray makePolygonMarkers(
     return out;
 }
 
-// =============================================================================
-// Unit config loading
-// =============================================================================
-
-// Reads cart_points from a JSON config and builds the base (unrotated) polygon.
-static std::vector<std::pair<float, float>> parseCartPolygon(const nlohmann::json& json)
-{
-    std::vector<std::pair<float, float>> polygon;
-    if (!json.contains("cart_points")) return polygon;
-
-    for (const auto& pt : json["cart_points"]) {
-        const float px = pt["x"].get<float>();
-        const float py = pt["y"].get<float>();
-        // Clamp front points to x=0: we don't filter in front of the robot
-        polygon.emplace_back(px > 0.0f ? 0.0f : px, py);
-    }
-    return polygon;
-}
-
-// Scans base_path for a subdirectory containing config.json, then updates
-// g_filter_config. Called once at startup and periodically by a timer.
-static bool loadUnitConfig(const std::string& base_path)
-{
-    if (base_path.empty()) return false;
-
-    try {
-        for (const auto& entry : std::filesystem::directory_iterator(base_path)) {
-            if (!entry.is_directory()) continue;
-            const auto config_file = entry.path() / "config.json";
-            if (!std::filesystem::exists(config_file)) continue;
-
-            std::ifstream f(config_file);
-            if (!f.is_open()) continue;
-
-            nlohmann::json json;
-            f >> json;
-
-            FilterConfig cfg;
-            cfg.base_polygon = parseCartPolygon(json);
-
-            const std::string unit_id = entry.path().filename().string();
-            const auto it = kConicFilterMap.find(unit_id);
-            cfg.conic_degree = (it != kConicFilterMap.end()) ? it->second : 0.0f;
-
-            {
-                std::lock_guard<std::mutex> lk(g_config_mutex);
-                g_filter_config = std::move(cfg);
-            }
-            ROS_INFO("[YDLIDAR] Loaded unit config '%s', conic_degree=%.3f rad",
-                     unit_id.c_str(), cfg.conic_degree);
-            return true;
-        }
-    } catch (const std::filesystem::filesystem_error& e) {
-        ROS_WARN_THROTTLE(5.0, "[YDLIDAR] Config scan error: %s", e.what());
-    }
-
-    ROS_WARN_THROTTLE(5.0, "[YDLIDAR] No unit config found in: %s", base_path.c_str());
-    return false;
-}
 
 // =============================================================================
 // Filter pipeline helpers
@@ -405,8 +342,7 @@ static void filterAndPublish(
 
     if (!need_filtered) return;
 
-    const auto [pts_x, pts_y] = collectObstaclePoints(
-        sor_cloud, robot_polygon, stage_angle, cfg.conic_degree);
+    const auto [pts_x, pts_y] = collectObstaclePoints(sor_cloud, robot_polygon, stage_angle, cfg.conic_degree);
 
     std_msgs::Header hdr;
     hdr.frame_id = "base_link";
@@ -418,14 +354,31 @@ static void filterAndPublish(
 // ROS callbacks
 // =============================================================================
 
-void stageAngleCallback(const std_msgs::Float32& msg)
+void vehicleStateCallback(const cube_msgs::VehicleState& msg)
 {
-    g_stage_angle.store(msg.data);
+    g_stage_angle.store(static_cast<float>(msg.stageAngle));
 }
 
-void configReloadCallback(const ros::TimerEvent&)
+void unitConfigIdCallback(const std_msgs::String& msg)
 {
-    loadUnitConfig(g_unit_config_base_path);
+    const auto it = kConicFilterMap.find(msg.data);
+    const float conic = (it != kConicFilterMap.end()) ? it->second : 0.0f;
+    std::lock_guard<std::mutex> lk(g_config_mutex);
+    g_filter_config.conic_degree = conic;
+    ROS_INFO("[YDLIDAR] Unit config ID: '%s', conic_degree=%.3f rad", msg.data.c_str(), conic);
+}
+
+void cartPolygonCallback(const geometry_msgs::Polygon& msg)
+{
+    std::vector<std::pair<float, float>> polygon;
+    polygon.reserve(msg.points.size());
+    for (const auto& pt : msg.points) {
+        // Clamp front points to x=0: we don't filter in front of the robot
+        polygon.emplace_back(pt.x > 0.0f ? 0.0f : pt.x, pt.y);
+    }
+    std::lock_guard<std::mutex> lk(g_config_mutex);
+    g_filter_config.base_polygon = std::move(polygon);
+    ROS_INFO("[YDLIDAR] Received cart polygon with %zu points", g_filter_config.base_polygon.size());
 }
 
 bool stop_scan(std_srvs::Empty::Request& /*req*/, std_srvs::Empty::Response& /*res*/)
@@ -624,24 +577,10 @@ int main(int argc, char** argv)
     nh_private.param<bool>("point_cloud_preservative", point_cloud_preservative, point_cloud_preservative);
 
     // ---- Filter setup ----
-    std::string stage_angle_topic = "/cube/stage_angle";
-    nh_private.param<std::string>("stage_angle_topic", stage_angle_topic, stage_angle_topic);
-    ros::Subscriber stage_angle_sub = nh.subscribe(stage_angle_topic, 1, stageAngleCallback);
-
-    {
-        const char* home = std::getenv("HOME");
-        const std::string default_path = home
-            ? std::string(home) + "/work/muse_cube_pc_aws/unit_config/"
-            : "";
-        nh_private.param<std::string>("unit_config_base_path", g_unit_config_base_path, default_path);
-    }
-
-    float config_reload_interval_s = 5.0f;
-    nh_private.param<float>("config_reload_interval_s", config_reload_interval_s, config_reload_interval_s);
-
-    loadUnitConfig(g_unit_config_base_path);  // load once at startup
-    ros::Timer config_timer = nh.createTimer(
-        ros::Duration(config_reload_interval_s), configReloadCallback);
+    // Config is provided by vehicle_interface via latched topics on startup.
+    ros::Subscriber vehicle_state_sub  = nh.subscribe("/cube/data/vehicle_state",       1, vehicleStateCallback);
+    ros::Subscriber unit_config_id_sub = nh.subscribe("/cube/unit_config_id",            1, unitConfigIdCallback);
+    ros::Subscriber cart_polygon_sub   = nh.subscribe("/cube/unit_config/cart_polygon",  1, cartPolygonCallback);
 
     tf::TransformListener      tf_listener;
     laser_geometry::LaserProjection projector;
