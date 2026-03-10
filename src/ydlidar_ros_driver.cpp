@@ -96,7 +96,8 @@ struct FilterConfig
 };
 FilterConfig       g_filter_config;
 std::mutex         g_config_mutex;
-std::atomic<float> g_stage_angle{0.0f};
+std::atomic<float>   g_stage_angle{0.0f};
+std::atomic<uint8_t> g_drive_mode{cube_msgs::VehicleState::MODE_LOCKED};
 
 // =============================================================================
 // Geometry helpers
@@ -357,6 +358,7 @@ static void filterAndPublish(
 void vehicleStateCallback(const cube_msgs::VehicleState& msg)
 {
     g_stage_angle.store(static_cast<float>(msg.stageAngle));
+    g_drive_mode.store(msg.driveMode);
 }
 
 void unitConfigIdCallback(const std_msgs::String& msg)
@@ -611,8 +613,14 @@ int main(int argc, char** argv)
             scan_pub.publish(scan_msg);
             pc_pub.publish(pc_msg);
 
-            // Then publish filtered scan (same thread → minimal latency between the two)
-            filterAndPublish(scan_msg, scan_filtered_pub, polygon_pub, tf_listener, projector);
+            // Publish filtered scan only when robot is stationary (FREE or LOCKED mode)
+            const uint8_t drive_mode = g_drive_mode.load();
+            const bool robot_is_stationary = !(drive_mode == cube_msgs::VehicleState::MODE_FREE) &&
+                                             !(drive_mode == cube_msgs::VehicleState::MODE_LOCKED);
+            if (robot_is_stationary)
+            {
+                filterAndPublish(scan_msg, scan_filtered_pub, polygon_pub, tf_listener, projector);
+            }
 
         } else {
             if (!is_paused && !restartLidarSession(lastRestart, retry_count)) {
