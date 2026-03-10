@@ -120,7 +120,7 @@ static bool isPointInPolygon(float x, float y, const std::vector<std::pair<float
 	for (int i = 0, j = size - 1; i < size; j = i++) {
         const float xi = polygon[i].first;  
 		const float yi = polygon[i].second;
-        const float xj = polygon[j].first,  
+        const float xj = polygon[j].first; 
 		const float yj = polygon[j].second;
         if ((yi > y) != (yj > y)) {
             const float intersection_x = (xj - xi) * (y - yi) / (yj - yi) + xi;
