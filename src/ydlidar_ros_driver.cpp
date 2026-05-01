@@ -31,7 +31,8 @@
 #include <std_srvs/Empty.h>
 #include <cube_msgs/VehicleState.h>
 #include <geometry_msgs/Polygon.h>
-#include <std_msgs/String.h>
+#include <std_msgs/Float32.h>
+#include <std_msgs/Float32MultiArray.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <visualization_msgs/Marker.h>
 #include <geometry_msgs/Point.h>
@@ -53,7 +54,6 @@
 #include <cmath>
 #include <limits>
 #include <mutex>
-#include <unordered_map>
 
 // =============================================================================
 // Constants
@@ -67,16 +67,10 @@ static constexpr float kSORStddevThresh     = 0.5f;
 static constexpr int   kDownsampleStride    = 2;
 static constexpr float kTFTimeoutSec        = 0.1f;
 
-// Conic filter half-angle (50°) applied to all known stage attachments
-static constexpr float kConicDegree = 5.0f * M_PI / 18.0f;
-
-static const std::unordered_map<std::string, float> kConicFilterMap = {
-    {"config_slim_stage40deg",  kConicDegree},
-    {"config_slim_stage_false", kConicDegree},
-    {"kago120_stage80deg",      kConicDegree},
-    {"kago_stage80deg",         kConicDegree},
-    {"longcart_50deg",          kConicDegree},
-    {"camera",                  kConicDegree},
+struct FilterZone
+{
+    float center_rad;
+    float half_width_rad;
 };
 
 // =============================================================================
@@ -92,7 +86,8 @@ ros::Time lastRestart;
 struct FilterConfig
 {
     std::vector<std::pair<float, float>> base_polygon;  // cart polygon, unrotated (meters)
-    float conic_degree = 0.0f;
+    float lateral_scale = 1.0f;
+    std::vector<FilterZone> filter_zones;
 };
 FilterConfig       g_filter_config;
 std::mutex         g_config_mutex;
@@ -130,22 +125,27 @@ static bool isPointInPolygon(float x, float y, const std::vector<std::pair<float
     return (crossings % 2) == 1;
 }
 
-// Returns true if the point falls inside the angular cone behind the robot.
-// The cone is centred at (PI + stage_angle) and has half-width conic_degree.
-static bool isPointInConicFilterArea(float x, float y, float stage_angle, float conic_degree)
+// Returns true if the point falls inside any of the configured filter zones.
+// Each zone center is defined relative to stage_angle (in base_link: center_rad + stage_angle).
+static bool isPointInConicFilterArea(float x, float y, float stage_angle, const std::vector<FilterZone>& zones)
 {
-    if (conic_degree == 0.0f) return false;
+    if (zones.empty()) return false;
 
-    const float ray_angle         = normalizeTo2pi(std::atan2(y, x));
-    const float stage_normalized  = normalizeTo2pi(stage_angle);
-    const float left_boundary     = normalizeTo2pi((static_cast<float>(M_PI) + conic_degree) + stage_normalized);
-    const float right_boundary    = normalizeTo2pi((static_cast<float>(M_PI) - conic_degree) + stage_normalized);
+    const float ray_angle        = normalizeTo2pi(std::atan2(y, x));
+    const float stage_normalized = normalizeTo2pi(stage_angle);
 
-    // When right > left the angular interval wraps around 0
-    const bool cone_wraps_around_zero = right_boundary > left_boundary;
-    if (cone_wraps_around_zero)
-        return (ray_angle > right_boundary) || (ray_angle < left_boundary);
-    return (ray_angle > right_boundary) && (ray_angle < left_boundary);
+    for (const auto& zone : zones) {
+        const float left_boundary  = normalizeTo2pi(zone.center_rad + zone.half_width_rad + stage_normalized);
+        const float right_boundary = normalizeTo2pi(zone.center_rad - zone.half_width_rad + stage_normalized);
+
+        const bool wraps = right_boundary > left_boundary;
+        const bool in_zone = wraps
+            ? (ray_angle > right_boundary) || (ray_angle < left_boundary)
+            : (ray_angle > right_boundary) && (ray_angle < left_boundary);
+
+        if (in_zone) return true;
+    }
+    return false;
 }
 
 // =============================================================================
@@ -259,7 +259,7 @@ static std::pair<std::vector<float>, std::vector<float>> collectObstaclePoints(
     const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
     const std::vector<std::pair<float, float>>& robot_polygon,
     float stage_angle,
-    float conic_degree)
+    const std::vector<FilterZone>& zones)
 {
     std::vector<float> out_x, out_y;
     out_x.reserve(cloud->size() / kDownsampleStride + 1);
@@ -269,7 +269,7 @@ static std::pair<std::vector<float>, std::vector<float>> collectObstaclePoints(
         const pcl::PointXYZ& pt = cloud->points[i];
         if (!std::isfinite(pt.x) || !std::isfinite(pt.y)) continue;
         if (!robot_polygon.empty() && isPointInPolygon(pt.x, pt.y, robot_polygon)) continue;
-        if (isPointInConicFilterArea(pt.x, pt.y, stage_angle, conic_degree)) continue;
+        if (isPointInConicFilterArea(pt.x, pt.y, stage_angle, zones)) continue;
         out_x.push_back(pt.x);
         out_y.push_back(pt.y);
     }
@@ -331,8 +331,14 @@ static void filterAndPublish(
         cfg = g_filter_config;
     }
 
-    const float stage_angle    = g_stage_angle.load();
-    const auto  robot_polygon  = rotatePolygon(cfg.base_polygon, stage_angle);
+    const float stage_angle = g_stage_angle.load();
+
+    // Apply lateral scale to Y before rotation
+    auto scaled_polygon = cfg.base_polygon;
+    for (auto& pt : scaled_polygon) {
+        pt.second *= cfg.lateral_scale;
+    }
+    const auto robot_polygon = rotatePolygon(scaled_polygon, stage_angle);
 
     if (need_polygon && !robot_polygon.empty()) {
         std_msgs::Header hdr;
@@ -343,7 +349,7 @@ static void filterAndPublish(
 
     if (!need_filtered) return;
 
-    const auto [pts_x, pts_y] = collectObstaclePoints(sor_cloud, robot_polygon, stage_angle, cfg.conic_degree);
+    const auto [pts_x, pts_y] = collectObstaclePoints(sor_cloud, robot_polygon, stage_angle, cfg.filter_zones);
 
     std_msgs::Header hdr;
     hdr.frame_id = "base_link";
@@ -361,13 +367,24 @@ void vehicleStateCallback(const cube_msgs::VehicleState& msg)
     g_drive_mode.store(msg.driveMode);
 }
 
-void unitConfigIdCallback(const std_msgs::String& msg)
+void filterZonesCallback(const std_msgs::Float32MultiArray& msg)
 {
-    const auto it = kConicFilterMap.find(msg.data);
-    const float conic = (it != kConicFilterMap.end()) ? it->second : 0.0f;
+    std::vector<FilterZone> zones;
+    const auto& data = msg.data;
+    // Data is interleaved: [center1_rad, hw1_rad, center2_rad, hw2_rad, ...]
+    for (std::size_t i = 0; i + 1 < data.size(); i += 2) {
+        zones.push_back({data[i], data[i + 1]});
+    }
     std::lock_guard<std::mutex> lk(g_config_mutex);
-    g_filter_config.conic_degree = conic;
-    ROS_INFO("[YDLIDAR] Unit config ID: '%s', conic_degree=%.3f rad", msg.data.c_str(), conic);
+    g_filter_config.filter_zones = std::move(zones);
+    ROS_INFO("[YDLIDAR] Received %zu filter zone(s)", g_filter_config.filter_zones.size());
+}
+
+void cartLateralScaleCallback(const std_msgs::Float32& msg)
+{
+    std::lock_guard<std::mutex> lk(g_config_mutex);
+    g_filter_config.lateral_scale = msg.data;
+    ROS_DEBUG("[YDLIDAR] Lateral scale updated: %.3f", msg.data);
 }
 
 void cartPolygonCallback(const geometry_msgs::Polygon& msg)
@@ -580,9 +597,10 @@ int main(int argc, char** argv)
 
     // ---- Filter setup ----
     // Config is provided by vehicle_interface via latched topics on startup.
-    ros::Subscriber vehicle_state_sub  = nh.subscribe("/cube/data/vehicle_state",       1, vehicleStateCallback);
-    ros::Subscriber unit_config_id_sub = nh.subscribe("/cube/unit_config_id",            1, unitConfigIdCallback);
-    ros::Subscriber cart_polygon_sub   = nh.subscribe("/cube/unit_config/cart_polygon",  1, cartPolygonCallback);
+    ros::Subscriber vehicle_state_sub  = nh.subscribe("/cube/data/vehicle_state",            1, vehicleStateCallback);
+    ros::Subscriber cart_polygon_sub   = nh.subscribe("/cube/unit_config/cart_polygon",     1, cartPolygonCallback);
+    ros::Subscriber filter_zones_sub   = nh.subscribe("/cube/unit_config/filter_zones",     1, filterZonesCallback);
+    ros::Subscriber lateral_scale_sub  = nh.subscribe("/cube/unit_config/cart_lateral_scale", 1, cartLateralScaleCallback);
 
     tf::TransformListener      tf_listener;
     laser_geometry::LaserProjection projector;
