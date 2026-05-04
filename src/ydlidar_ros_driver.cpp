@@ -436,7 +436,7 @@ static void filterAndPublish(
 
     std_msgs::Header viz_hdr;
     viz_hdr.frame_id = "base_link";
-    viz_hdr.stamp    = scan.header.stamp;
+    viz_hdr.stamp    = ros::Time(0);
 
     if (need_polygon && !robot_polygon.empty()) {
         polygon_pub.publish(makePolygonMarkers(robot_polygon, viz_hdr));
@@ -453,7 +453,7 @@ static void filterAndPublish(
 
     std_msgs::Header hdr;
     hdr.frame_id = "base_link";
-    hdr.stamp    = scan.header.stamp;
+    hdr.stamp    = ros::Time(0);
     filtered_pub.publish(buildFilteredCloud(pts_x, pts_y, hdr));
 }
 
