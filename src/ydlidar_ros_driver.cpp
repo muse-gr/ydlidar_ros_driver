@@ -248,14 +248,6 @@ static visualization_msgs::MarkerArray makeFilterZoneMarkers(
 // Filter pipeline helpers
 // =============================================================================
 
-// Computes the timestamp of the last point in the scan (used for TF lookup).
-static ros::Time computeLatestScanTime(const sensor_msgs::LaserScan& scan)
-{
-    double duration = static_cast<double>(scan.ranges.size()) * scan.time_increment;
-    duration = std::max(0.0, std::min(duration, 1.0));  // clamp to sane range
-    return scan.header.stamp + ros::Duration(duration);
-}
-
 // Transforms a LaserScan to a PointCloud2 in base_link frame.
 // Returns false if TF is unavailable or the transform fails.
 static bool transformScanToCloud(
@@ -419,8 +411,6 @@ static void filterAndPublish(
     const bool need_polygon  = polygon_pub.getNumSubscribers() > 0;
     if (!need_filtered && !need_polygon) return;
 
-    const ros::Time latest_stamp = computeLatestScanTime(scan);
-
     sensor_msgs::PointCloud2 raw_cloud;
     if (!transformScanToCloud(scan, tf_listener, projector, raw_cloud))
         return;
@@ -446,7 +436,7 @@ static void filterAndPublish(
 
     std_msgs::Header viz_hdr;
     viz_hdr.frame_id = "base_link";
-    viz_hdr.stamp    = latest_stamp;
+    viz_hdr.stamp    = scan.header.stamp;
 
     if (need_polygon && !robot_polygon.empty()) {
         polygon_pub.publish(makePolygonMarkers(robot_polygon, viz_hdr));
@@ -463,7 +453,7 @@ static void filterAndPublish(
 
     std_msgs::Header hdr;
     hdr.frame_id = "base_link";
-    hdr.stamp    = latest_stamp;
+    hdr.stamp    = scan.header.stamp;
     filtered_pub.publish(buildFilteredCloud(pts_x, pts_y, hdr));
 }
 
