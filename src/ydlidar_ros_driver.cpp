@@ -191,6 +191,58 @@ static visualization_msgs::MarkerArray makePolygonMarkers(
 }
 
 
+static visualization_msgs::MarkerArray makeFilterZoneMarkers(
+    const std::vector<FilterZone>& zones,
+    float stage_angle,
+    const std_msgs::Header& header)
+{
+    visualization_msgs::MarkerArray out;
+    if (zones.empty()) return out;
+
+    constexpr float RADIUS    = 2.0f;
+    constexpr int   ARC_STEPS = 20;
+
+    for (std::size_t i = 0; i < zones.size(); ++i)
+    {
+        const float center      = stage_angle + zones[i].center_rad;
+        const float right_angle = center - zones[i].half_width_rad;
+        const float left_angle  = center + zones[i].half_width_rad;
+
+        visualization_msgs::Marker m;
+        m.header             = header;
+        m.ns                 = "filter_zones";
+        m.id                 = static_cast<int>(i);
+        m.type               = visualization_msgs::Marker::LINE_STRIP;
+        m.action             = visualization_msgs::Marker::ADD;
+        m.pose.orientation.w = 1.0;
+        m.lifetime           = ros::Duration(0.3);
+        m.scale.x            = 0.02f;
+        m.color.r            = 1.0f;
+        m.color.g            = 0.2f;
+        m.color.b            = 0.2f;
+        m.color.a            = 0.8f;
+
+        geometry_msgs::Point origin;
+        origin.x = origin.y = origin.z = 0.0;
+        m.points.push_back(origin);
+
+        for (int step = 0; step <= ARC_STEPS; ++step)
+        {
+            const float angle = right_angle + (left_angle - right_angle) * step / ARC_STEPS;
+            geometry_msgs::Point p;
+            p.x = RADIUS * std::cos(angle);
+            p.y = RADIUS * std::sin(angle);
+            p.z = 0.0;
+            m.points.push_back(p);
+        }
+
+        m.points.push_back(origin);
+        out.markers.push_back(std::move(m));
+    }
+
+    return out;
+}
+
 // =============================================================================
 // Filter pipeline helpers
 // =============================================================================
@@ -359,6 +411,7 @@ static void filterAndPublish(
     const sensor_msgs::LaserScan& scan,
     ros::Publisher& filtered_pub,
     ros::Publisher& polygon_pub,
+    ros::Publisher& filter_zones_pub,
     tf::TransformListener& tf_listener,
     laser_geometry::LaserProjection& projector)
 {
@@ -391,11 +444,16 @@ static void filterAndPublish(
     }
     const auto robot_polygon = rotatePolygon(scaled_polygon, stage_angle);
 
+    std_msgs::Header viz_hdr;
+    viz_hdr.frame_id = "base_link";
+    viz_hdr.stamp    = latest_stamp;
+
     if (need_polygon && !robot_polygon.empty()) {
-        std_msgs::Header hdr;
-        hdr.frame_id = "base_link";
-        hdr.stamp    = latest_stamp;
-        polygon_pub.publish(makePolygonMarkers(robot_polygon, hdr));
+        polygon_pub.publish(makePolygonMarkers(robot_polygon, viz_hdr));
+    }
+
+    if (filter_zones_pub.getNumSubscribers() > 0 && !cfg.filter_zones.empty()) {
+        filter_zones_pub.publish(makeFilterZoneMarkers(cfg.filter_zones, stage_angle, viz_hdr));
     }
 
     if (!need_filtered) return;
@@ -637,10 +695,11 @@ int main(int argc, char** argv)
     ros::NodeHandle nh_private("~");
 
     // ---- Publishers ----
-    ros::Publisher scan_pub         = nh.advertise<sensor_msgs::LaserScan>("scan", 1);
-    ros::Publisher pc_pub           = nh.advertise<sensor_msgs::PointCloud>("point_cloud", 1);
+    ros::Publisher scan_pub          = nh.advertise<sensor_msgs::LaserScan>("scan", 1);
+    ros::Publisher pc_pub            = nh.advertise<sensor_msgs::PointCloud>("point_cloud", 1);
     ros::Publisher scan_filtered_pub = nh.advertise<sensor_msgs::PointCloud2>("filtered_pointcloud", 1);
-    ros::Publisher polygon_pub      = nh.advertise<visualization_msgs::MarkerArray>("obstacle_polygon_visualization", 1);
+    ros::Publisher polygon_pub       = nh.advertise<visualization_msgs::MarkerArray>("obstacle_polygon_visualization", 1);
+    ros::Publisher filter_zones_pub  = nh.advertise<visualization_msgs::MarkerArray>("filter_zones_marker", 1);
 
     // ---- Lidar hardware setup ----
     setupLidarHardwareParams(nh_private);
@@ -693,7 +752,7 @@ int main(int argc, char** argv)
             scan_pub.publish(scan_msg);
             pc_pub.publish(pc_msg);
 
-            filterAndPublish(scan_msg, scan_filtered_pub, polygon_pub, tf_listener, projector);
+            filterAndPublish(scan_msg, scan_filtered_pub, polygon_pub, filter_zones_pub, tf_listener, projector);
 
         } else {
             if (!is_paused && !restartLidarSession(lastRestart, retry_count)) {
