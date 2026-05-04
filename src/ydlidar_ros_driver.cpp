@@ -33,6 +33,7 @@
 #include <geometry_msgs/Polygon.h>
 #include <std_msgs/Float32.h>
 #include <std_msgs/Float32MultiArray.h>
+#include <geometry_msgs/Pose2D.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <visualization_msgs/Marker.h>
 #include <geometry_msgs/Point.h>
@@ -93,6 +94,11 @@ FilterConfig       g_filter_config;
 std::mutex         g_config_mutex;
 std::atomic<float>   g_stage_angle{0.0f};
 std::atomic<uint8_t> g_drive_mode{cube_msgs::VehicleState::MODE_LOCKED};
+
+geometry_msgs::Pose2D g_door_pose;
+bool                  g_has_door_pose = false;
+float                 g_door_size = 1.2f;
+float                 g_door_filter_max_distance = 2.5f;
 
 // =============================================================================
 // Geometry helpers
@@ -252,6 +258,49 @@ static std::vector<std::pair<float, float>> rotatePolygon(
     return rotated;
 }
 
+// Returns the 4 corners of the door filter square in the robot frame.
+// Returns an empty vector if no door pose is available, if the door is farther than
+// g_door_filter_max_distance, or if the TF lookup fails.
+static std::vector<std::pair<float, float>> computeDoorPolygon(
+    tf::TransformListener& tf_listener)
+{
+    if (!g_has_door_pose) return {};
+
+    tf::StampedTransform transform;
+    try {
+        tf_listener.lookupTransform("base_link", "map", ros::Time(0), transform);
+    } catch (const tf::TransformException& e) {
+        ROS_WARN_THROTTLE(2.0, "[YDLIDAR] Door TF exception: %s", e.what());
+        return {};
+    }
+
+    const tf::Point door_center(g_door_pose.x, g_door_pose.y, 0.0);
+    const tf::Point door_center_robot = transform * door_center;
+    const float cx = static_cast<float>(door_center_robot.x());
+    const float cy = static_cast<float>(door_center_robot.y());
+
+    if (std::hypot(cx, cy) > g_door_filter_max_distance) return {};
+
+    // Derive orientation in robot frame by transforming a point along the door direction
+    const tf::Point door_dir(g_door_pose.x + std::cos(g_door_pose.theta),
+                             g_door_pose.y + std::sin(g_door_pose.theta), 0.0);
+    const tf::Point door_dir_robot = transform * door_dir;
+    const float theta = std::atan2(
+        static_cast<float>(door_dir_robot.y() - door_center_robot.y()),
+        static_cast<float>(door_dir_robot.x() - door_center_robot.x()));
+
+    const float half    = g_door_size * 0.5f;
+    const float along_x =  std::cos(theta), along_y =  std::sin(theta);  // unit vector along the door
+    const float normal_x = -std::sin(theta), normal_y = std::cos(theta); // unit vector perpendicular to the door
+
+    return {
+        {cx + half * (along_x + normal_x), cy + half * (along_y + normal_y)},
+        {cx + half * (along_x - normal_x), cy + half * (along_y - normal_y)},
+        {cx + half * (-along_x - normal_x), cy + half * (-along_y - normal_y)},
+        {cx + half * (-along_x + normal_x), cy + half * (-along_y + normal_y)},
+    };
+}
+
 // Iterates the SOR-filtered cloud, removing robot-body and conic-zone points.
 // Applies downsampling (every kDownsampleStride-th point).
 // Returns the surviving points as (x, y) in meters.
@@ -259,7 +308,8 @@ static std::pair<std::vector<float>, std::vector<float>> collectObstaclePoints(
     const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
     const std::vector<std::pair<float, float>>& robot_polygon,
     float stage_angle,
-    const std::vector<FilterZone>& zones)
+    const std::vector<FilterZone>& zones,
+    const std::vector<std::pair<float, float>>& door_polygon)
 {
     std::vector<float> out_x, out_y;
     out_x.reserve(cloud->size() / kDownsampleStride + 1);
@@ -270,6 +320,7 @@ static std::pair<std::vector<float>, std::vector<float>> collectObstaclePoints(
         if (!std::isfinite(pt.x) || !std::isfinite(pt.y)) continue;
         if (!robot_polygon.empty() && isPointInPolygon(pt.x, pt.y, robot_polygon)) continue;
         if (isPointInConicFilterArea(pt.x, pt.y, stage_angle, zones)) continue;
+        if (!door_polygon.empty() && isPointInPolygon(pt.x, pt.y, door_polygon)) continue;
         out_x.push_back(pt.x);
         out_y.push_back(pt.y);
     }
@@ -349,7 +400,8 @@ static void filterAndPublish(
 
     if (!need_filtered) return;
 
-    const auto [pts_x, pts_y] = collectObstaclePoints(sor_cloud, robot_polygon, stage_angle, cfg.filter_zones);
+    const auto door_polygon = computeDoorPolygon(tf_listener);
+    const auto [pts_x, pts_y] = collectObstaclePoints(sor_cloud, robot_polygon, stage_angle, cfg.filter_zones, door_polygon);
 
     std_msgs::Header hdr;
     hdr.frame_id = "base_link";
@@ -385,6 +437,12 @@ void cartLateralScaleCallback(const std_msgs::Float32& msg)
     std::lock_guard<std::mutex> lk(g_config_mutex);
     g_filter_config.lateral_scale = msg.data;
     ROS_DEBUG("[YDLIDAR] Lateral scale updated: %.3f", msg.data);
+}
+
+void doorPoseCallback(const geometry_msgs::Pose2D& msg)
+{
+    g_door_pose     = msg;
+    g_has_door_pose = true;
 }
 
 void cartPolygonCallback(const geometry_msgs::Polygon& msg)
@@ -597,10 +655,14 @@ int main(int argc, char** argv)
 
     // ---- Filter setup ----
     // Config is provided by vehicle_interface via latched topics on startup.
-    ros::Subscriber vehicle_state_sub  = nh.subscribe("/cube/data/vehicle_state",            1, vehicleStateCallback);
-    ros::Subscriber cart_polygon_sub   = nh.subscribe("/cube/unit_config/cart_polygon",     1, cartPolygonCallback);
-    ros::Subscriber filter_zones_sub   = nh.subscribe("/cube/unit_config/filter_zones",     1, filterZonesCallback);
-    ros::Subscriber lateral_scale_sub  = nh.subscribe("/cube/unit_config/cart_lateral_scale", 1, cartLateralScaleCallback);
+    nh_private.param<float>("door_size",                g_door_size,                 1.2f);
+    nh_private.param<float>("door_filter_max_distance", g_door_filter_max_distance,  2.5f);
+
+    ros::Subscriber vehicle_state_sub  = nh.subscribe("/cube/data/vehicle_state",              1, vehicleStateCallback);
+    ros::Subscriber cart_polygon_sub   = nh.subscribe("/cube/unit_config/cart_polygon",        1, cartPolygonCallback);
+    ros::Subscriber filter_zones_sub   = nh.subscribe("/cube/unit_config/filter_zones",        1, filterZonesCallback);
+    ros::Subscriber lateral_scale_sub  = nh.subscribe("/cube/unit_config/cart_lateral_scale",  1, cartLateralScaleCallback);
+    ros::Subscriber door_pose_sub      = nh.subscribe("/cube/door_pose",                       1, doorPoseCallback);
 
     tf::TransformListener      tf_listener;
     laser_geometry::LaserProjection projector;
