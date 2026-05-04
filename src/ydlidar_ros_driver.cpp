@@ -693,14 +693,7 @@ int main(int argc, char** argv)
             scan_pub.publish(scan_msg);
             pc_pub.publish(pc_msg);
 
-            // Publish filtered scan only when robot is stationary (FREE or LOCKED mode)
-            const uint8_t drive_mode = g_drive_mode.load();
-            const bool robot_is_stationary = !(drive_mode == cube_msgs::VehicleState::MODE_FREE) &&
-                                             !(drive_mode == cube_msgs::VehicleState::MODE_LOCKED);
-            if (robot_is_stationary)
-            {
-                filterAndPublish(scan_msg, scan_filtered_pub, polygon_pub, tf_listener, projector);
-            }
+            filterAndPublish(scan_msg, scan_filtered_pub, polygon_pub, tf_listener, projector);
 
         } else {
             if (!is_paused && !restartLidarSession(lastRestart, retry_count)) {
