@@ -259,17 +259,10 @@ static ros::Time computeLatestScanTime(const sensor_msgs::LaserScan& scan)
 // Returns false if TF is unavailable or the transform fails.
 static bool transformScanToCloud(
     const sensor_msgs::LaserScan& scan,
-    const ros::Time& target_time,
     tf::TransformListener& tf_listener,
     laser_geometry::LaserProjection& projector,
     sensor_msgs::PointCloud2& cloud_out)
 {
-    if (!tf_listener.waitForTransform(scan.header.frame_id, "base_link",
-                                      target_time, ros::Duration(kTFTimeoutSec)))
-    {
-        ROS_WARN_THROTTLE(2.0, "[YDLIDAR] No TF %s->base_link", scan.header.frame_id.c_str());
-        return false;
-    }
     try {
         projector.transformLaserScanToPointCloud("base_link", scan, cloud_out, tf_listener);
     } catch (const tf::TransformException& e) {
@@ -422,7 +415,7 @@ static void filterAndPublish(
     const ros::Time latest_stamp = computeLatestScanTime(scan);
 
     sensor_msgs::PointCloud2 raw_cloud;
-    if (!transformScanToCloud(scan, latest_stamp, tf_listener, projector, raw_cloud))
+    if (!transformScanToCloud(scan, tf_listener, projector, raw_cloud))
         return;
 
     pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
