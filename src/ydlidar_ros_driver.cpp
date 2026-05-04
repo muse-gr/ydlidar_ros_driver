@@ -192,6 +192,45 @@ static visualization_msgs::MarkerArray makePolygonMarkers(
 }
 
 
+static visualization_msgs::MarkerArray makeDoorPolygonMarkers(
+    const std::vector<std::pair<float, float>>& polygon,
+    const std_msgs::Header& header)
+{
+    visualization_msgs::MarkerArray out;
+    visualization_msgs::Marker m;
+    m.header             = header;
+    m.ns                 = "door_polygon";
+    m.id                 = 0;
+    m.pose.orientation.w = 1.0;
+
+    if (polygon.empty()) {
+        m.action = visualization_msgs::Marker::DELETE;
+        out.markers.push_back(m);
+        return out;
+    }
+
+    m.type     = visualization_msgs::Marker::LINE_STRIP;
+    m.action   = visualization_msgs::Marker::ADD;
+    m.scale.x  = 0.05f;
+    m.lifetime = ros::Duration(0.3);
+    m.color.r  = 1.0f;
+    m.color.g  = 0.5f;
+    m.color.b  = 0.0f;
+    m.color.a  = 1.0f;
+
+    for (const auto& p : polygon) {
+        geometry_msgs::Point gp;
+        gp.x = p.first;
+        gp.y = p.second;
+        m.points.push_back(gp);
+    }
+    m.points.push_back(m.points.front());
+
+    out.markers.push_back(std::move(m));
+    return out;
+}
+
+
 static visualization_msgs::MarkerArray makeFilterZoneMarkers(
     const std::vector<FilterZone>& zones,
     float stage_angle,
@@ -408,11 +447,27 @@ static void filterAndPublish(
     ros::Publisher& filtered_pub,
     ros::Publisher& polygon_pub,
     ros::Publisher& filter_zones_pub,
+    ros::Publisher& door_polygon_pub,
     tf::TransformListener& tf_listener,
     laser_geometry::LaserProjection& projector)
 {
-    const bool need_filtered = filtered_pub.getNumSubscribers() > 0;
-    const bool need_polygon  = polygon_pub.getNumSubscribers() > 0;
+    const bool need_filtered  = filtered_pub.getNumSubscribers() > 0;
+    const bool need_polygon   = polygon_pub.getNumSubscribers() > 0;
+    const bool need_door_viz  = door_polygon_pub.getNumSubscribers() > 0;
+    if (!need_filtered && !need_polygon && !need_door_viz) return;
+
+    std_msgs::Header viz_hdr;
+    viz_hdr.frame_id = "base_link";
+    viz_hdr.stamp    = scan.header.stamp;
+
+    // Door polygon is independent of cloud processing — compute once for viz and filtering
+    std::vector<std::pair<float, float>> door_polygon;
+    if (need_filtered || need_door_viz)
+        door_polygon = computeDoorPolygon(tf_listener);
+
+    if (need_door_viz)
+        door_polygon_pub.publish(makeDoorPolygonMarkers(door_polygon, viz_hdr));
+
     if (!need_filtered && !need_polygon) return;
 
     sensor_msgs::PointCloud2 raw_cloud;
@@ -431,16 +486,11 @@ static void filterAndPublish(
 
     const float stage_angle = g_stage_angle.load();
 
-    // Apply lateral scale to Y before rotation
     auto scaled_polygon = cfg.base_polygon;
     for (auto& pt : scaled_polygon) {
         pt.second *= cfg.lateral_scale;
     }
     const auto robot_polygon = rotatePolygon(scaled_polygon, stage_angle);
-
-    std_msgs::Header viz_hdr;
-    viz_hdr.frame_id = "base_link";
-    viz_hdr.stamp    = scan.header.stamp;
 
     if (need_polygon && !robot_polygon.empty()) {
         polygon_pub.publish(makePolygonMarkers(robot_polygon, viz_hdr));
@@ -452,7 +502,6 @@ static void filterAndPublish(
 
     if (!need_filtered) return;
 
-    const auto door_polygon = computeDoorPolygon(tf_listener);
     const auto [pts_x, pts_y] = collectObstaclePoints(sor_cloud, robot_polygon, stage_angle, cfg.filter_zones, door_polygon);
 
     std_msgs::Header hdr;
@@ -689,11 +738,12 @@ int main(int argc, char** argv)
     ros::NodeHandle nh_private("~");
 
     // ---- Publishers ----
-    ros::Publisher scan_pub          = nh.advertise<sensor_msgs::LaserScan>("scan", 1);
-    ros::Publisher pc_pub            = nh.advertise<sensor_msgs::PointCloud>("point_cloud", 1);
-    ros::Publisher scan_filtered_pub = nh.advertise<sensor_msgs::PointCloud2>("filtered_pointcloud", 1);
-    ros::Publisher polygon_pub       = nh.advertise<visualization_msgs::MarkerArray>("obstacle_polygon_visualization", 1);
-    ros::Publisher filter_zones_pub  = nh.advertise<visualization_msgs::MarkerArray>("filter_zones_marker", 1);
+    ros::Publisher scan_pub           = nh.advertise<sensor_msgs::LaserScan>("scan", 1);
+    ros::Publisher pc_pub             = nh.advertise<sensor_msgs::PointCloud>("point_cloud", 1);
+    ros::Publisher scan_filtered_pub  = nh.advertise<sensor_msgs::PointCloud2>("filtered_pointcloud", 1);
+    ros::Publisher polygon_pub        = nh.advertise<visualization_msgs::MarkerArray>("obstacle_polygon_visualization", 1);
+    ros::Publisher filter_zones_pub   = nh.advertise<visualization_msgs::MarkerArray>("filter_zones_marker", 1);
+    ros::Publisher door_polygon_pub   = nh.advertise<visualization_msgs::MarkerArray>("door_polygon_visualization", 1);
 
     // ---- Lidar hardware setup ----
     setupLidarHardwareParams(nh_private);
@@ -746,7 +796,7 @@ int main(int argc, char** argv)
             scan_pub.publish(scan_msg);
             pc_pub.publish(pc_msg);
 
-            filterAndPublish(scan_msg, scan_filtered_pub, polygon_pub, filter_zones_pub, tf_listener, projector);
+            filterAndPublish(scan_msg, scan_filtered_pub, polygon_pub, filter_zones_pub, door_polygon_pub, tf_listener, projector);
 
         } else {
             if (!is_paused && !restartLidarSession(lastRestart, retry_count)) {
