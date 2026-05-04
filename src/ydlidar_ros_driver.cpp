@@ -89,16 +89,15 @@ struct FilterConfig
     std::vector<std::pair<float, float>> base_polygon;  // cart polygon, unrotated (meters)
     float lateral_scale = 1.0f;
     std::vector<FilterZone> filter_zones;
+    geometry_msgs::Pose2D door_pose;
+    bool has_door_pose = false;
 };
-FilterConfig       g_filter_config;
-std::mutex         g_config_mutex;
+FilterConfig         g_filter_config;
+std::mutex           g_config_mutex;
 std::atomic<float>   g_stage_angle{0.0f};
 std::atomic<uint8_t> g_drive_mode{cube_msgs::VehicleState::MODE_LOCKED};
-
-geometry_msgs::Pose2D g_door_pose;
-bool                  g_has_door_pose = false;
-float                 g_door_size = 1.2f;
-float                 g_door_filter_max_distance = 2.5f;
+float                g_door_size = 1.2f;
+float                g_door_filter_max_distance = 2.5f;
 
 // =============================================================================
 // Geometry helpers
@@ -314,9 +313,10 @@ static std::vector<std::pair<float, float>> rotatePolygon(
 // Returns an empty vector if no door pose is available, if the door is farther than
 // g_door_filter_max_distance, or if the TF lookup fails.
 static std::vector<std::pair<float, float>> computeDoorPolygon(
+    const FilterConfig& cfg,
     tf::TransformListener& tf_listener)
 {
-    if (!g_has_door_pose) return {};
+    if (!cfg.has_door_pose) return {};
 
     tf::StampedTransform transform;
     try {
@@ -326,7 +326,7 @@ static std::vector<std::pair<float, float>> computeDoorPolygon(
         return {};
     }
 
-    const tf::Point door_center(g_door_pose.x, g_door_pose.y, 0.0);
+    const tf::Point door_center(cfg.door_pose.x, cfg.door_pose.y, 0.0);
     const tf::Point door_center_robot = transform * door_center;
     const float cx = static_cast<float>(door_center_robot.x());
     const float cy = static_cast<float>(door_center_robot.y());
@@ -334,8 +334,8 @@ static std::vector<std::pair<float, float>> computeDoorPolygon(
     if (std::hypot(cx, cy) > g_door_filter_max_distance) return {};
 
     // Derive orientation in robot frame by transforming a point along the door direction
-    const tf::Point door_dir(g_door_pose.x + std::cos(g_door_pose.theta),
-                             g_door_pose.y + std::sin(g_door_pose.theta), 0.0);
+    const tf::Point door_dir(cfg.door_pose.x + std::cos(cfg.door_pose.theta),
+                             cfg.door_pose.y + std::sin(cfg.door_pose.theta), 0.0);
     const tf::Point door_dir_robot = transform * door_dir;
     const float theta = std::atan2(
         static_cast<float>(door_dir_robot.y() - door_center_robot.y()),
@@ -458,7 +458,7 @@ static void filterAndPublish(
 
     if (!need_filtered) return;
 
-    const auto door_polygon = computeDoorPolygon(tf_listener);
+    const auto door_polygon = computeDoorPolygon(cfg, tf_listener);
     const auto [pts_x, pts_y] = collectObstaclePoints(sor_cloud, robot_polygon, stage_angle, cfg.filter_zones, door_polygon);
 
     std_msgs::Header hdr;
@@ -499,8 +499,9 @@ void cartLateralScaleCallback(const std_msgs::Float32& msg)
 
 void doorPoseCallback(const geometry_msgs::Pose2D& msg)
 {
-    g_door_pose     = msg;
-    g_has_door_pose = true;
+    std::lock_guard<std::mutex> lk(g_config_mutex);
+    g_filter_config.door_pose     = msg;
+    g_filter_config.has_door_pose = true;
 }
 
 void cartPolygonCallback(const geometry_msgs::Polygon& msg)
@@ -723,8 +724,21 @@ int main(int argc, char** argv)
     ros::Subscriber lateral_scale_sub  = nh.subscribe("/cube/unit_config/cart_lateral_scale",  1, cartLateralScaleCallback);
     ros::Subscriber door_pose_sub      = nh.subscribe("/cube/door_pose",                       1, doorPoseCallback);
 
-    tf::TransformListener      tf_listener;
+    tf::TransformListener       tf_listener;
     laser_geometry::LaserProjection projector;
+
+    // ---- Filter subscription (separate thread to avoid blocking hardware read) ----
+    ros::CallbackQueue filter_queue;
+    ros::NodeHandle    nh_filter;
+    nh_filter.setCallbackQueue(&filter_queue);
+    ros::Subscriber scan_filter_sub = nh_filter.subscribe<sensor_msgs::LaserScan>(
+        "scan", 1,
+        [&](const sensor_msgs::LaserScan::ConstPtr& msg) {
+            filterAndPublish(*msg, scan_filtered_pub, polygon_pub, filter_zones_pub, tf_listener, projector);
+        }
+    );
+    ros::AsyncSpinner filter_spinner(1, &filter_queue);
+    filter_spinner.start();
 
     // ---- Services ----
     ros::ServiceServer stop_srv  = nh.advertiseService("stop_scan",  stop_scan);
@@ -748,11 +762,9 @@ int main(int argc, char** argv)
             const auto scan_msg = buildScanMsg(sdk_scan, frame_id, invalid_range_is_inf);
             const auto pc_msg   = buildPointCloudMsg(sdk_scan, scan_msg.header, point_cloud_preservative);
 
-            // Publish raw data first
+            // Publish raw data — filtering runs asynchronously via scan_filter_sub
             scan_pub.publish(scan_msg);
             pc_pub.publish(pc_msg);
-
-            filterAndPublish(scan_msg, scan_filtered_pub, polygon_pub, filter_zones_pub, tf_listener, projector);
 
         } else {
             if (!is_paused && !restartLidarSession(lastRestart, retry_count)) {
