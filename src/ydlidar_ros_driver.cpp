@@ -39,6 +39,7 @@
 #include <geometry_msgs/Point.h>
 #include <tf/transform_listener.h>
 #include <laser_geometry/laser_geometry.h>
+#include <pcl_ros/transforms.h>
 
 // ---- PCL ----
 #include <pcl/point_cloud.h>
@@ -263,12 +264,18 @@ static bool transformScanToCloud(
     laser_geometry::LaserProjection& projector,
     sensor_msgs::PointCloud2& cloud_out)
 {
+    sensor_msgs::PointCloud2 lidar_cloud;
+    projector.projectLaser(scan, lidar_cloud);
+
+    tf::StampedTransform transform;
     try {
-        projector.transformLaserScanToPointCloud("base_link", scan, cloud_out, tf_listener);
+        tf_listener.lookupTransform("base_link", scan.header.frame_id, ros::Time(0), transform);
     } catch (const tf::TransformException& e) {
         ROS_WARN_THROTTLE(2.0, "[YDLIDAR] TF exception: %s", e.what());
         return false;
     }
+
+    pcl_ros::transformPointCloud("base_link", transform, lidar_cloud, cloud_out);
     return true;
 }
 
