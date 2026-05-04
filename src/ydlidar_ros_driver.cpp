@@ -323,7 +323,11 @@ static std::vector<std::pair<float, float>> computeDoorPolygon(
     const float cx = static_cast<float>(door_center_robot.x());
     const float cy = static_cast<float>(door_center_robot.y());
 
-    if (std::hypot(cx, cy) > g_door_filter_max_distance) return {};
+    if (std::hypot(cx, cy) > g_door_filter_max_distance)
+    {
+        g_has_door_pose = false;
+        return {};
+    }
 
     // Derive orientation in robot frame by transforming a point along the door direction
     const tf::Point door_dir(g_door_pose.x + std::cos(g_door_pose.theta),
