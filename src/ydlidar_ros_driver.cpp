@@ -300,10 +300,14 @@ static bool transformScanToCloud(
 
     tf::StampedTransform transform;
     try {
-        tf_listener.lookupTransform("base_link", scan.header.frame_id, ros::Time(0), transform);
-    } catch (const tf::TransformException& e) {
-        ROS_WARN_THROTTLE(2.0, "[YDLIDAR] TF exception: %s", e.what());
-        return false;
+        tf_listener.lookupTransform("base_link", scan.header.frame_id, scan.header.stamp, transform);
+    } catch (const tf::TransformException&) {
+        try {
+            tf_listener.lookupTransform("base_link", scan.header.frame_id, ros::Time(0), transform);
+        } catch (const tf::TransformException& e) {
+            ROS_WARN_THROTTLE(2.0, "[YDLIDAR] TF exception: %s", e.what());
+            return false;
+        }
     }
 
     pcl_ros::transformPointCloud("base_link", transform, lidar_cloud, cloud_out);
@@ -345,16 +349,21 @@ static std::vector<std::pair<float, float>> rotatePolygon(
 // Returns an empty vector if no door pose is available, if the door is farther than
 // g_door_filter_max_distance, or if the TF lookup fails.
 static std::vector<std::pair<float, float>> computeDoorPolygon(
-    tf::TransformListener& tf_listener)
+    tf::TransformListener& tf_listener,
+    const ros::Time& stamp)
 {
     if (!g_has_door_pose) return {};
 
     tf::StampedTransform transform;
     try {
-        tf_listener.lookupTransform("base_link", "map", ros::Time(0), transform);
-    } catch (const tf::TransformException& e) {
-        ROS_WARN_THROTTLE(2.0, "[YDLIDAR] Door TF exception: %s", e.what());
-        return {};
+        tf_listener.lookupTransform("base_link", "map", stamp, transform);
+    } catch (const tf::TransformException&) {
+        try {
+            tf_listener.lookupTransform("base_link", "map", ros::Time(0), transform);
+        } catch (const tf::TransformException& e) {
+            ROS_WARN_THROTTLE(2.0, "[YDLIDAR] Door TF exception: %s", e.what());
+            return {};
+        }
     }
 
     const tf::Point door_center(g_door_pose.x, g_door_pose.y, 0.0);
@@ -463,7 +472,7 @@ static void filterAndPublish(
     // Door polygon is independent of cloud processing — compute once for viz and filtering
     std::vector<std::pair<float, float>> door_polygon;
     if (need_filtered || need_door_viz)
-        door_polygon = computeDoorPolygon(tf_listener);
+        door_polygon = computeDoorPolygon(tf_listener, scan.header.stamp);
 
     if (need_door_viz)
         door_polygon_pub.publish(makeDoorPolygonMarkers(door_polygon, viz_hdr));
