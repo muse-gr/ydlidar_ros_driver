@@ -98,7 +98,7 @@ std::atomic<uint8_t> g_drive_mode{cube_msgs::VehicleState::MODE_LOCKED};
 
 geometry_msgs::Pose2D g_door_pose;
 bool                  g_has_door_pose = false;
-float                 g_door_size = 1.2f;
+float                 g_door_size = 2.0f;
 float                 g_door_filter_max_distance = 2.5f;
 
 // =============================================================================
@@ -758,7 +758,7 @@ int main(int argc, char** argv)
 
     // ---- Filter setup ----
     // Config is provided by vehicle_interface via latched topics on startup.
-    nh_private.param<float>("door_size",                g_door_size,                 1.2f);
+    nh_private.param<float>("door_size",                g_door_size,                 2.0f);
     nh_private.param<float>("door_filter_max_distance", g_door_filter_max_distance,  2.5f);
 
     ros::Subscriber vehicle_state_sub  = nh.subscribe("/cube/data/vehicle_state",              1, vehicleStateCallback);
