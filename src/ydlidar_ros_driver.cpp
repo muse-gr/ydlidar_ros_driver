@@ -765,7 +765,7 @@ int main(int argc, char** argv)
     ros::Subscriber cart_polygon_sub   = nh.subscribe("/cube/unit_config/cart_polygon",        1, cartPolygonCallback);
     ros::Subscriber filter_zones_sub   = nh.subscribe("/cube/unit_config/filter_zones",        1, filterZonesCallback);
     ros::Subscriber lateral_scale_sub  = nh.subscribe("/cube/unit_config/cart_lateral_scale",  1, cartLateralScaleCallback);
-    ros::Subscriber door_pose_sub      = nh.subscribe("/cube/door_pose",                       1, doorPoseCallback);
+    ros::Subscriber door_pose_sub      = nh.subscribe("/detected_door_center",                 1, doorPoseCallback);
 
     tf::TransformListener      tf_listener;
     laser_geometry::LaserProjection projector;
