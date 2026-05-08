@@ -301,13 +301,9 @@ static bool transformScanToCloud(
     tf::StampedTransform transform;
     try {
         tf_listener.lookupTransform("base_link", scan.header.frame_id, scan.header.stamp, transform);
-    } catch (const tf::TransformException&) {
-        try {
-            tf_listener.lookupTransform("base_link", scan.header.frame_id, ros::Time(0), transform);
-        } catch (const tf::TransformException& e) {
-            ROS_WARN_THROTTLE(2.0, "[YDLIDAR] TF exception: %s", e.what());
-            return false;
-        }
+    } catch (const tf::TransformException& e) {
+        ROS_WARN_THROTTLE(2.0, "[YDLIDAR] TF exception: %s", e.what());
+        return false;
     }
 
     pcl_ros::transformPointCloud("base_link", transform, lidar_cloud, cloud_out);
@@ -357,13 +353,9 @@ static std::vector<std::pair<float, float>> computeDoorPolygon(
     tf::StampedTransform transform;
     try {
         tf_listener.lookupTransform("base_link", "map", stamp, transform);
-    } catch (const tf::TransformException&) {
-        try {
-            tf_listener.lookupTransform("base_link", "map", ros::Time(0), transform);
-        } catch (const tf::TransformException& e) {
-            ROS_WARN_THROTTLE(2.0, "[YDLIDAR] Door TF exception: %s", e.what());
-            return {};
-        }
+    } catch (const tf::TransformException& e) {
+        ROS_WARN_THROTTLE(2.0, "[YDLIDAR] Door TF exception: %s", e.what());
+        return {};
     }
 
     const tf::Point door_center(g_door_pose.x, g_door_pose.y, 0.0);
