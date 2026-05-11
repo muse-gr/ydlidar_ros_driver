@@ -30,10 +30,10 @@
 #include <sensor_msgs/point_cloud2_iterator.h>
 #include <std_srvs/Empty.h>
 #include <cube_msgs/VehicleState.h>
+#include <cube_msgs/Polygons.h>
 #include <geometry_msgs/Polygon.h>
 #include <std_msgs/Float32.h>
 #include <std_msgs/Float32MultiArray.h>
-#include <geometry_msgs/Pose2D.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <visualization_msgs/Marker.h>
 #include <geometry_msgs/Point.h>
@@ -96,10 +96,8 @@ std::mutex         g_config_mutex;
 std::atomic<float>   g_stage_angle{0.0f};
 std::atomic<uint8_t> g_drive_mode{cube_msgs::VehicleState::MODE_LOCKED};
 
-geometry_msgs::Pose2D g_door_pose;
-bool                  g_has_door_pose = false;
-float                 g_door_size = 2.0f;
-float                 g_door_filter_max_distance = 2.5f;
+using Polygon2D = std::vector<std::pair<float, float>>;
+std::vector<Polygon2D> g_door_polygons_map;
 
 // =============================================================================
 // Geometry helpers
@@ -193,40 +191,45 @@ static visualization_msgs::MarkerArray makePolygonMarkers(
 
 
 static visualization_msgs::MarkerArray makeDoorPolygonMarkers(
-    const std::vector<std::pair<float, float>>& polygon,
+    const std::vector<Polygon2D>& polygons,
     const std_msgs::Header& header)
 {
     visualization_msgs::MarkerArray out;
-    visualization_msgs::Marker m;
-    m.header             = header;
-    m.ns                 = "door_polygon";
-    m.id                 = 0;
-    m.pose.orientation.w = 1.0;
 
-    if (polygon.empty()) {
-        m.action = visualization_msgs::Marker::DELETE;
-        out.markers.push_back(m);
+    if (polygons.empty()) {
+        visualization_msgs::Marker clear_all;
+        clear_all.header = header;
+        clear_all.ns     = "door_polygon";
+        clear_all.action = visualization_msgs::Marker::DELETEALL;
+        out.markers.push_back(clear_all);
         return out;
     }
 
-    m.type     = visualization_msgs::Marker::LINE_STRIP;
-    m.action   = visualization_msgs::Marker::ADD;
-    m.scale.x  = 0.05f;
-    m.lifetime = ros::Duration(0.3);
-    m.color.r  = 1.0f;
-    m.color.g  = 0.5f;
-    m.color.b  = 0.0f;
-    m.color.a  = 1.0f;
+    for (std::size_t i = 0; i < polygons.size(); ++i) {
+        visualization_msgs::Marker m;
+        m.header             = header;
+        m.ns                 = "door_polygon";
+        m.id                 = static_cast<int>(i);
+        m.pose.orientation.w = 1.0;
+        m.type               = visualization_msgs::Marker::LINE_STRIP;
+        m.action             = visualization_msgs::Marker::ADD;
+        m.scale.x            = 0.05f;
+        m.lifetime           = ros::Duration(0.3);
+        m.color.r            = 1.0f;
+        m.color.g            = 0.5f;
+        m.color.b            = 0.0f;
+        m.color.a            = 1.0f;
 
-    for (const auto& p : polygon) {
-        geometry_msgs::Point gp;
-        gp.x = p.first;
-        gp.y = p.second;
-        m.points.push_back(gp);
+        for (const auto& vertex : polygons[i]) {
+            geometry_msgs::Point gp;
+            gp.x = vertex.first;
+            gp.y = vertex.second;
+            m.points.push_back(gp);
+        }
+        m.points.push_back(m.points.front());
+
+        out.markers.push_back(std::move(m));
     }
-    m.points.push_back(m.points.front());
-
-    out.markers.push_back(std::move(m));
     return out;
 }
 
@@ -341,63 +344,58 @@ static std::vector<std::pair<float, float>> rotatePolygon(
     return rotated;
 }
 
-// Returns the 4 corners of the door filter square in the robot frame.
-// Returns an empty vector if no door pose is available, if the door is farther than
-// g_door_filter_max_distance, or if the TF lookup fails.
-static std::vector<std::pair<float, float>> computeDoorPolygon(
+// Transforms each cached map-frame door polygon into base_link, using the TF
+// at the scan timestamp so the polygons stay coherent with the lidar points.
+// Returns an empty list if no polygons are cached or the TF lookup fails.
+static std::vector<Polygon2D> computeDoorPolygons(
     tf::TransformListener& tf_listener,
     const ros::Time& stamp)
 {
-    if (!g_has_door_pose) return {};
+    if (g_door_polygons_map.empty()) return {};
 
-    tf::StampedTransform transform;
+    tf::StampedTransform map_to_base;
     try {
-        tf_listener.lookupTransform("base_link", "map", stamp, transform);
+        tf_listener.lookupTransform("base_link", "map", stamp, map_to_base);
     } catch (const tf::TransformException& e) {
         ROS_WARN_THROTTLE(2.0, "[YDLIDAR] Door TF exception: %s", e.what());
         return {};
     }
 
-    const tf::Point door_center(g_door_pose.x, g_door_pose.y, 0.0);
-    const tf::Point door_center_robot = transform * door_center;
-    const float cx = static_cast<float>(door_center_robot.x());
-    const float cy = static_cast<float>(door_center_robot.y());
+    std::vector<Polygon2D> polygons_in_base_link;
+    polygons_in_base_link.reserve(g_door_polygons_map.size());
 
-    if (std::hypot(cx, cy) > g_door_filter_max_distance)
-    {
-        g_has_door_pose = false;
-        return {};
+    for (const auto& polygon_map : g_door_polygons_map) {
+        Polygon2D polygon_base_link;
+        polygon_base_link.reserve(polygon_map.size());
+        for (const auto& vertex_map : polygon_map) {
+            const tf::Point vertex_in_map(vertex_map.first, vertex_map.second, 0.0);
+            const tf::Point vertex_in_base = map_to_base * vertex_in_map;
+            polygon_base_link.emplace_back(
+                static_cast<float>(vertex_in_base.x()),
+                static_cast<float>(vertex_in_base.y()));
+        }
+        polygons_in_base_link.push_back(std::move(polygon_base_link));
     }
-
-    // Derive orientation in robot frame by transforming a point along the door direction
-    const tf::Point door_dir(g_door_pose.x + std::cos(g_door_pose.theta),
-                             g_door_pose.y + std::sin(g_door_pose.theta), 0.0);
-    const tf::Point door_dir_robot = transform * door_dir;
-    const float theta = std::atan2(
-        static_cast<float>(door_dir_robot.y() - door_center_robot.y()),
-        static_cast<float>(door_dir_robot.x() - door_center_robot.x()));
-
-    const float half    = g_door_size * 0.5f;
-    const float along_x =  std::cos(theta), along_y =  std::sin(theta);  // unit vector along the door
-    const float normal_x = -std::sin(theta), normal_y = std::cos(theta); // unit vector perpendicular to the door
-
-    return {
-        {cx + half * (along_x + normal_x), cy + half * (along_y + normal_y)},
-        {cx + half * (along_x - normal_x), cy + half * (along_y - normal_y)},
-        {cx + half * (-along_x - normal_x), cy + half * (-along_y - normal_y)},
-        {cx + half * (-along_x + normal_x), cy + half * (-along_y + normal_y)},
-    };
+    return polygons_in_base_link;
 }
 
 // Iterates the SOR-filtered cloud, removing robot-body and conic-zone points.
 // Applies downsampling (every kDownsampleStride-th point).
 // Returns the surviving points as (x, y) in meters.
+static bool isPointInAnyPolygon(float x, float y, const std::vector<Polygon2D>& polygons)
+{
+    for (const auto& polygon : polygons) {
+        if (isPointInPolygon(x, y, polygon)) return true;
+    }
+    return false;
+}
+
 static std::pair<std::vector<float>, std::vector<float>> collectObstaclePoints(
     const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
     const std::vector<std::pair<float, float>>& robot_polygon,
     float stage_angle,
     const std::vector<FilterZone>& zones,
-    const std::vector<std::pair<float, float>>& door_polygon)
+    const std::vector<Polygon2D>& door_polygons)
 {
     std::vector<float> out_x, out_y;
     out_x.reserve(cloud->size() / kDownsampleStride + 1);
@@ -408,7 +406,7 @@ static std::pair<std::vector<float>, std::vector<float>> collectObstaclePoints(
         if (!std::isfinite(pt.x) || !std::isfinite(pt.y)) continue;
         if (!robot_polygon.empty() && isPointInPolygon(pt.x, pt.y, robot_polygon)) continue;
         if (isPointInConicFilterArea(pt.x, pt.y, stage_angle, zones)) continue;
-        if (!door_polygon.empty() && isPointInPolygon(pt.x, pt.y, door_polygon)) continue;
+        if (isPointInAnyPolygon(pt.x, pt.y, door_polygons)) continue;
         out_x.push_back(pt.x);
         out_y.push_back(pt.y);
     }
@@ -461,13 +459,13 @@ static void filterAndPublish(
     viz_hdr.frame_id = "base_link";
     viz_hdr.stamp    = scan.header.stamp;
 
-    // Door polygon is independent of cloud processing — compute once for viz and filtering
-    std::vector<std::pair<float, float>> door_polygon;
+    // Door polygons are independent of cloud processing — compute once for viz and filtering
+    std::vector<Polygon2D> door_polygons;
     if (need_filtered || need_door_viz)
-        door_polygon = computeDoorPolygon(tf_listener, scan.header.stamp);
+        door_polygons = computeDoorPolygons(tf_listener, scan.header.stamp);
 
     if (need_door_viz)
-        door_polygon_pub.publish(makeDoorPolygonMarkers(door_polygon, viz_hdr));
+        door_polygon_pub.publish(makeDoorPolygonMarkers(door_polygons, viz_hdr));
 
     if (!need_filtered && !need_polygon) return;
 
@@ -503,7 +501,7 @@ static void filterAndPublish(
 
     if (!need_filtered) return;
 
-    const auto [pts_x, pts_y] = collectObstaclePoints(sor_cloud, robot_polygon, stage_angle, cfg.filter_zones, door_polygon);
+    const auto [pts_x, pts_y] = collectObstaclePoints(sor_cloud, robot_polygon, stage_angle, cfg.filter_zones, door_polygons);
 
     std_msgs::Header hdr;
     hdr.frame_id = "base_link";
@@ -541,10 +539,20 @@ void cartLateralScaleCallback(const std_msgs::Float32& msg)
     ROS_DEBUG("[YDLIDAR] Lateral scale updated: %.3f", msg.data);
 }
 
-void doorPoseCallback(const geometry_msgs::Pose2D& msg)
+void doorAreasCallback(const cube_msgs::Polygons& msg)
 {
-    g_door_pose     = msg;
-    g_has_door_pose = true;
+    std::vector<Polygon2D> polygons;
+    polygons.reserve(msg.polygons.size());
+    for (const auto& polygon : msg.polygons) {
+        Polygon2D vertices;
+        vertices.reserve(polygon.points.size());
+        for (const auto& point : polygon.points) {
+            vertices.emplace_back(point.x, point.y);
+        }
+        polygons.push_back(std::move(vertices));
+    }
+    g_door_polygons_map = std::move(polygons);
+    ROS_INFO("[YDLIDAR] Received %zu door filter polygon(s)", g_door_polygons_map.size());
 }
 
 void cartPolygonCallback(const geometry_msgs::Polygon& msg)
@@ -758,15 +766,12 @@ int main(int argc, char** argv)
     nh_private.param<bool>("point_cloud_preservative", point_cloud_preservative, point_cloud_preservative);
 
     // ---- Filter setup ----
-    // Config is provided by vehicle_interface via latched topics on startup.
-    nh_private.param<float>("door_size",                g_door_size,                 2.0f);
-    nh_private.param<float>("door_filter_max_distance", g_door_filter_max_distance,  2.5f);
-
+    // Config is provided by vehicle_interface and mode_area_handler via latched topics on startup.
     ros::Subscriber vehicle_state_sub  = nh.subscribe("/cube/data/vehicle_state",              1, vehicleStateCallback);
     ros::Subscriber cart_polygon_sub   = nh.subscribe("/cube/unit_config/cart_polygon",        1, cartPolygonCallback);
     ros::Subscriber filter_zones_sub   = nh.subscribe("/cube/unit_config/filter_zones",        1, filterZonesCallback);
     ros::Subscriber lateral_scale_sub  = nh.subscribe("/cube/unit_config/cart_lateral_scale",  1, cartLateralScaleCallback);
-    ros::Subscriber door_pose_sub      = nh.subscribe("/detected_door_center",                 1, doorPoseCallback);
+    ros::Subscriber door_areas_sub     = nh.subscribe("/door_areas/filter_polygons",           1, doorAreasCallback);
 
     tf::TransformListener      tf_listener;
     laser_geometry::LaserProjection projector;
