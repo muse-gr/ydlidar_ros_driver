@@ -344,18 +344,16 @@ static std::vector<std::pair<float, float>> rotatePolygon(
     return rotated;
 }
 
-// Transforms each cached map-frame door polygon into base_link, using the TF
-// at the scan timestamp so the polygons stay coherent with the lidar points.
-// Returns an empty list if no polygons are cached or the TF lookup fails.
-static std::vector<Polygon2D> computeDoorPolygons(
-    tf::TransformListener& tf_listener,
-    const ros::Time& stamp)
+// Transforms each cached map-frame door polygon into base_link, using the
+// latest available TF. Returns an empty list if no polygons are cached
+// or the TF lookup fails.
+static std::vector<Polygon2D> computeDoorPolygons(tf::TransformListener& tf_listener)
 {
     if (g_door_polygons_map.empty()) return {};
 
     tf::StampedTransform map_to_base;
     try {
-        tf_listener.lookupTransform("base_link", "map", stamp, map_to_base);
+        tf_listener.lookupTransform("base_link", "map", ros::Time(0), map_to_base);
     } catch (const tf::TransformException& e) {
         ROS_WARN_THROTTLE(2.0, "[YDLIDAR] Door TF exception: %s", e.what());
         return {};
@@ -462,7 +460,7 @@ static void filterAndPublish(
     // Door polygons are independent of cloud processing — compute once for viz and filtering
     std::vector<Polygon2D> door_polygons;
     if (need_filtered || need_door_viz)
-        door_polygons = computeDoorPolygons(tf_listener, scan.header.stamp);
+        door_polygons = computeDoorPolygons(tf_listener);
 
     if (need_door_viz)
         door_polygon_pub.publish(makeDoorPolygonMarkers(door_polygons, viz_hdr));
