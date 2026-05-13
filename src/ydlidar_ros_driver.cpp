@@ -64,10 +64,9 @@
 #define YDLIDAR_ROS_VERSION "1.0.2"
 
 static constexpr int   kMaxRestartAttempts  = 5;
-static constexpr float kSORMeanK            = 12.0f;
+static constexpr int   kSORMeanK            = 12;
 static constexpr float kSORStddevThresh     = 0.5f;
 static constexpr int   kDownsampleStride    = 2;
-static constexpr float kTFTimeoutSec        = 0.1f;
 
 struct FilterZone
 {
@@ -94,7 +93,6 @@ struct FilterConfig
 FilterConfig       g_filter_config;
 std::mutex         g_config_mutex;
 std::atomic<float>   g_stage_angle{0.0f};
-std::atomic<uint8_t> g_drive_mode{cube_msgs::VehicleState::MODE_LOCKED};
 
 using Polygon2D = std::vector<std::pair<float, float>>;
 std::vector<Polygon2D> g_door_polygons_map;
@@ -514,7 +512,6 @@ static void filterAndPublish(
 void vehicleStateCallback(const cube_msgs::VehicleState& msg)
 {
     g_stage_angle.store(static_cast<float>(msg.stageAngle));
-    g_drive_mode.store(msg.driveMode);
 }
 
 void filterZonesCallback(const std_msgs::Float32MultiArray& msg)
