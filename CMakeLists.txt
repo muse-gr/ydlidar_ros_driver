@@ -14,11 +14,20 @@ find_package(ydlidar_sdk REQUIRED)
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
 find_package(catkin REQUIRED COMPONENTS
-  	message_generation
-	roscpp
-	rospy
-	sensor_msgs
-	)
+    message_generation
+    roscpp
+    rospy
+    sensor_msgs
+    std_msgs
+    tf
+    laser_geometry
+    pcl_ros
+    pcl_conversions
+    visualization_msgs
+    cube_msgs
+)
+
+find_package(PCL REQUIRED)
 
 ##################LaserFan ##########################
 #add_message_files(DIRECTORY msg
@@ -40,8 +49,9 @@ find_package(catkin REQUIRED COMPONENTS
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(CATKIN_DEPENDS
-	roscpp rospy sensor_msgs message_runtime
-	)
+    roscpp rospy sensor_msgs std_msgs message_runtime
+    tf laser_geometry pcl_ros pcl_conversions visualization_msgs cube_msgs
+)
 #---------------------------------------------------------------------------------------
 # Set default build to release
 #---------------------------------------------------------------------------------------
@@ -52,12 +62,16 @@ endif()
 #---------------------------------------------------------------------------------------
 # Compiler config
 #---------------------------------------------------------------------------------------
-set(CMAKE_CXX_STANDARD 11)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 #Include directories
-include_directories(${catkin_INCLUDE_DIRS} ${YDLIDAR_SDK_INCLUDE_DIRS})
+include_directories(
+    ${catkin_INCLUDE_DIRS}
+    ${YDLIDAR_SDK_INCLUDE_DIRS}
+    ${PCL_INCLUDE_DIRS}
+)
 
 #link library directories
 link_directories(${YDLIDAR_SDK_LIBRARY_DIRS})
@@ -78,9 +92,10 @@ add_executable(${PROJECT_NAME}_node src/ydlidar_ros_driver.cpp)
 # link libraries
 #---------------------------------------------------------------------------------------
 target_link_libraries(${PROJECT_NAME}_node
-	${catkin_LIBRARIES}
-	${YDLIDAR_SDK_LIBRARIES}
-	)
+    ${catkin_LIBRARIES}
+    ${YDLIDAR_SDK_LIBRARIES}
+    ${PCL_LIBRARIES}
+)
 
 
 #---------------------------------------------------------------------------------------
